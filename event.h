@@ -23,7 +23,7 @@ struct event
     char filename[128]; // used by event_exec and event_open
 
     // for event_connect :
-    unsigned int remote_addr; // I handle remote sockets for now, local sockets are more comple
+    unsigned int remote_addr; // I handle remote sockets for now, local sockets are more complex
     unsigned short remote_port;
     unsigned short family; // AF_INET (=2) or AF_INET6 (=10)
 
