@@ -25,6 +25,8 @@ static __always_inline void get_current_proc(struct event *e)  // fill the event
 {                                                              // timestamp, pid, uid, ppid and comm are the same for all events.
     struct task_struct *task;
 
+    __builtin_memset(e, 0, sizeof(*e)); // Initialize the event structure to zero
+
     e->timestamp = bpf_ktime_get_ns();
     e->pid = bpf_get_current_pid_tgid() >> 32; // get the PID from the upper 32 bits
     
@@ -46,8 +48,9 @@ int handle_execve(struct trace_event_raw_sys_enter* ctx) // hanlde the EXECVE ev
     {
         return 0;
     }
-    e->type = EVENT_EXEC;
     get_current_proc(e);
+    e->type = EVENT_EXEC;
+    
 
     filename_ptr = (const char *)ctx->args[0];
     bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr);
@@ -68,8 +71,8 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx) // hanlde the OPENAT
         return 0;
     }
 
-    e->type = EVENT_OPEN;
     get_current_proc(e);
+    e->type = EVENT_OPEN;
 
     filename_ptr = (const char *)ctx->args[1];
     bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr);
@@ -91,8 +94,8 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) // hanlde the CONNECT
         return 0;
     }
 
-    e->type = EVENT_CONNECT;
     get_current_proc(e);
+    e->type = EVENT_CONNECT;
 
     addr_ptr = (const void *)ctx->args[1];
     bpf_probe_read_user(&addr, sizeof(addr), addr_ptr); //we do not know if it is IPv4 or IPv6   
@@ -129,8 +132,8 @@ int handle_exit(struct trace_event_raw_sched_process_template *ctx) // hanlde th
         return 0;
     }
 
-    e->type = EVENT_EXIT;
     get_current_proc(e);
+    e->type = EVENT_EXIT;
 
     bpf_ringbuf_submit(e, 0);
     return 0;
