@@ -59,6 +59,28 @@ int handle_execve(struct trace_event_raw_sys_enter* ctx) // hanlde the EXECVE ev
     return 0;
 }
 
+SEC("tracepoint/sched/sched_process_fork")
+int handle_clone(struct trace_event_raw_sched_process_fork *ctx) // hanlde the CLONE event
+{
+    struct event *e;
+
+    e = bpf_ringbuf_reserve(&ring_buffer, sizeof(*e), 0); //safecheck it is not NULL
+    if (!e)
+    {
+        return 0;
+    }
+
+    get_current_proc(e);
+    e->type = EVENT_CLONE;
+
+    e->pid = ctx->child_pid; // Override the PID with the child PID 
+    e->ppid = ctx->parent_pid; // Override the PPID with the parent PID 
+    bpf_get_current_comm(&e->comm, sizeof(e->comm)); // Override the comm with the child's comm
+    
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
 SEC("tracepoint/syscalls/sys_enter_openat")
 int handle_openat(struct trace_event_raw_sys_enter *ctx) // hanlde the OPENAT
 {

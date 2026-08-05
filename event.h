@@ -3,10 +3,11 @@
 
 enum event_type 
 {
-    EVENT_EXEC = 1,         //for now event_clone or event_fork is not here 
+    EVENT_EXEC = 1,         
     EVENT_OPEN = 2,
     EVENT_CONNECT = 3,
     EVENT_EXIT = 4,
+    EVENT_CLONE = 5,
 };
 
 
@@ -27,7 +28,7 @@ struct event
     unsigned short remote_port;
     unsigned short family; // AF_INET (=2) or AF_INET6 (=10)
 
-    //for event_exit: nothing needed, pid,uid,comm and timestamp are enough
+    //for event_exit & event_clone: nothing needed, pid,uid,comm and timestamp are enough
 };
 
 #endif /* __EVENT_H */

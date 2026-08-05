@@ -19,6 +19,8 @@ static const char *type_name(unsigned int type)
     {
         case EVENT_EXEC:
             return "EXEC";
+        case EVENT_CLONE:
+            return "CLONE";
         case EVENT_OPEN:
             return "OPEN";
         case EVENT_CONNECT:
@@ -57,7 +59,7 @@ int main(void)
 {
     struct bpf_object *obj;
     struct bpf_program *prog;
-    struct bpf_link *link_exec = NULL, *link_open = NULL, *link_connect = NULL, *link_exit = NULL;
+    struct bpf_link *link_exec = NULL, *link_open = NULL, *link_connect = NULL, *link_exit = NULL, *link_clone = NULL;
     struct ring_buffer *rb = NULL;
     int map_fd, err;
 
@@ -85,6 +87,14 @@ int main(void)
 		return 1;
 	}
  
+    prog = bpf_object__find_program_by_name(obj, "handle_clone");
+    link_clone = bpf_program__attach(prog);
+    if (!link_clone) 
+    {
+        fprintf(stderr, "failed to attach handle_clone\n");
+        return 1;
+    }
+
 	prog = bpf_object__find_program_by_name(obj, "handle_openat");
 	link_open = bpf_program__attach(prog);
 	if (!link_open) 
@@ -139,6 +149,7 @@ int main(void)
     bpf_link__destroy(link_open);
     bpf_link__destroy(link_connect);
     bpf_link__destroy(link_exit);
+    bpf_link__destroy(link_clone);
     bpf_object__close(obj);
 
     return 0;
