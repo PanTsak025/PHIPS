@@ -29,6 +29,7 @@ struct event
     unsigned short family; // AF_INET (=2) or AF_INET6 (=10)
 
     // for event_exit & event_clone: nothing needed, pid,uid,comm and timestamp are enough
+    unsigned char group_dead; // for event_exit, indicates if the process group-threads is dead (1) or not (0)
 };
 
 #endif /* __EVENT_H */

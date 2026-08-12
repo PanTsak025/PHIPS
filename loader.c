@@ -47,9 +47,10 @@ static int handle_event(void *ctx,void *data, size_t data_sz)
 
     printf("{\"type\":\"%s\",\"pid\":%u,\"ppid\":%u,\"uid\":%u,\"comm\":\"%s\","
         "\"filename\":\"%s\",\"dst_ip\":\"%s\",\"dst_port\":%u,"
-        "\"ts_ns\":%llu}\n",
+        "\"ts_ns\":%llu,\"group_dead\":%s}\n",
         type_name(e->type), e->pid, e->ppid, e->uid, e->comm, e->filename,
-        ipstr, e->remote_port ? ntohs(e->remote_port) : 0, e->timestamp);
+        ipstr, e->remote_port ? ntohs(e->remote_port) : 0, e->timestamp,
+        e->group_dead ? "true" : "false");
 	
     fflush(stdout);
 	return 0;

@@ -144,7 +144,7 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) // hanlde the CONNECT
 }
 
 SEC("tracepoint/sched/sched_process_exit")
-int handle_exit(struct trace_event_raw_sched_process_template *ctx) // hanlde the EXIT
+int handle_exit(struct trace_event_raw_sched_process_exit *ctx) // hanlde the EXIT
 {
     struct event *e;
 
@@ -156,7 +156,7 @@ int handle_exit(struct trace_event_raw_sched_process_template *ctx) // hanlde th
 
     get_current_proc(e);
     e->type = EVENT_EXIT;
-
+    e->group_dead = ctx->group_dead; // Set the group_dead field based on the tracepoint data   
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
