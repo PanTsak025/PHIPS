@@ -28,7 +28,7 @@ struct event
     unsigned short remote_port;
     unsigned short family; // AF_INET (=2) or AF_INET6 (=10)
 
-    //for event_exit & event_clone: nothing needed, pid,uid,comm and timestamp are enough
+    // for event_exit & event_clone: nothing needed, pid,uid,comm and timestamp are enough
 };
 
 #endif /* __EVENT_H */

@@ -120,7 +120,7 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) // hanlde the CONNECT
     e->type = EVENT_CONNECT;
 
     addr_ptr = (const void *)ctx->args[1];
-    bpf_probe_read_user(&addr, sizeof(addr), addr_ptr); //we do not know if it is IPv4 or IPv6   
+    bpf_probe_read_user(&addr, sizeof(addr), addr_ptr); //do not know if it is IPv4 or IPv6   
     
     if (addr.sin_family == AF_INET) 
     {
@@ -131,7 +131,7 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) // hanlde the CONNECT
     else if (addr.sin_family == AF_INET6) 
     {
         e->family = AF_INET6;
-        // For simplicity, we will not handle IPv6 addresses in this example
+        // not handle IPv6
     } 
     else 
     {
