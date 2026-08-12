@@ -31,6 +31,27 @@ static const char *type_name(unsigned int type)
             return "UNKNOWN";
     }
 }
+static void print_json_string(const char *s)
+{
+    putchar('"');
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+    {
+        switch (*p)
+        {
+        case '"':  fputs("\\\"", stdout); break;
+        case '\\': fputs("\\\\", stdout); break;
+        case '\n': fputs("\\n", stdout); break;
+        case '\r': fputs("\\r", stdout); break;
+        case '\t': fputs("\\t", stdout); break;
+        default:
+            if (*p < 0x20)
+                printf("\\u%04x", *p);
+            else
+                putchar(*p);
+        }
+    }
+    putchar('"');
+}
 
 // This function is called for each event received from the ring buffer
 // It prints the event information in JSON format
@@ -45,15 +66,19 @@ static int handle_event(void *ctx,void *data, size_t data_sz)
         inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
     }
 
-    printf("{\"type\":\"%s\",\"pid\":%u,\"ppid\":%u,\"uid\":%u,\"comm\":\"%s\","
-        "\"filename\":\"%s\",\"dst_ip\":\"%s\",\"dst_port\":%u,"
+    printf("{\"type\":\"%s\",\"pid\":%u,\"ppid\":%u,\"uid\":%u,\"comm\":",
+    type_name(e->type), e->pid, e->ppid, e->uid);
+    print_json_string(e->comm);
+    printf(",\"filename\":");
+    print_json_string(e->filename);
+    printf(",\"dst_ip\":\"%s\",\"dst_port\":%u,"
         "\"ts_ns\":%llu,\"group_dead\":%s}\n",
-        type_name(e->type), e->pid, e->ppid, e->uid, e->comm, e->filename,
         ipstr, e->remote_port ? ntohs(e->remote_port) : 0, e->timestamp,
         e->group_dead ? "true" : "false");
 	
     fflush(stdout);
 	return 0;
+
 }
 
 int main(void)
