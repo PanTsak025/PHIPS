@@ -1,10 +1,14 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <bpf/libbpf.h>
+#include <bpf/bpf.h>
 #include "event.h"
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 
 static volatile int running = 1;
 
@@ -31,6 +35,7 @@ static const char *type_name(unsigned int type)
             return "UNKNOWN";
     }
 }
+
 static void print_json_string(const char *s)
 {
     putchar('"');
@@ -53,12 +58,46 @@ static void print_json_string(const char *s)
     putchar('"');
 }
 
+static void resolve_openat_path(unsigned int pid, int dfd, const char *rel,
+                                 char *out, size_t out_sz)
+{
+    char linkpath[64];
+    char base[PATH_MAX];
+    ssize_t n;
+
+    if (rel[0] == '/') 
+    {
+        snprintf(out, out_sz, "%s", rel);
+        return;
+    }
+
+    if (dfd == AT_FDCWD) 
+    {
+        snprintf(linkpath, sizeof(linkpath), "/proc/%u/cwd", pid);
+    } else 
+    {
+        snprintf(linkpath, sizeof(linkpath), "/proc/%u/fd/%d", pid, dfd);
+    }
+
+    n = readlink(linkpath, base, sizeof(base) - 1);
+    if (n < 0) 
+    {
+        snprintf(out, out_sz, "%s", rel);
+        return;
+    }
+    base[n] = '\0';
+
+    snprintf(out, out_sz, "%s/%s", base, rel);
+}
+
 // This function is called for each event received from the ring buffer
 // It prints the event information in JSON format
 static int handle_event(void *ctx,void *data, size_t data_sz)
 {
     const struct event *e = data;
     char ipstr[INET_ADDRSTRLEN] = "";
+    char resolved_path[PATH_MAX];
+    const char *filename_to_print = e->filename;
 
     if(e->type == EVENT_CONNECT && e->family == 2) // AF_INET
     {
@@ -66,11 +105,18 @@ static int handle_event(void *ctx,void *data, size_t data_sz)
         inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
     }
 
+    if (e->type == EVENT_OPEN)
+    {
+        resolve_openat_path(e->pid, e->dfd, e->filename,
+                             resolved_path, sizeof(resolved_path));
+        filename_to_print = resolved_path;
+    }
+
     printf("{\"type\":\"%s\",\"pid\":%u,\"ppid\":%u,\"uid\":%u,\"comm\":",
-    type_name(e->type), e->pid, e->ppid, e->uid);
+        type_name(e->type), e->pid, e->ppid, e->uid);
     print_json_string(e->comm);
     printf(",\"filename\":");
-    print_json_string(e->filename);
+    print_json_string(filename_to_print);
     printf(",\"dst_ip\":\"%s\",\"dst_port\":%u,"
         "\"ts_ns\":%llu,\"group_dead\":%s}\n",
         ipstr, e->remote_port ? ntohs(e->remote_port) : 0, e->timestamp,
@@ -78,7 +124,6 @@ static int handle_event(void *ctx,void *data, size_t data_sz)
 	
     fflush(stdout);
 	return 0;
-
 }
 
 int main(void)
@@ -168,6 +213,24 @@ int main(void)
             fprintf(stderr, "error polling ring buffer: %d\n", err);
             break;
         }
+    }
+
+    int drop_map_fd = bpf_object__find_map_fd_by_name(obj, "drop_count");
+    if (drop_map_fd >= 0) 
+    {
+        int ncpus = libbpf_num_possible_cpus();
+        __u64 *per_cpu_vals = calloc(ncpus, sizeof(__u64));
+        __u32 key = 0;
+        if (per_cpu_vals &&
+            bpf_map_lookup_elem(drop_map_fd, &key, per_cpu_vals) == 0) 
+        {
+            __u64 total = 0;
+            for (int i = 0; i < ncpus; i++)
+                total += per_cpu_vals[i];
+            fprintf(stderr, "events dropped (ring buffer full): %llu\n",
+                    (unsigned long long)total);
+        }
+        free(per_cpu_vals);
     }
 
     ring_buffer__free(rb);

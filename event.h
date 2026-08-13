@@ -27,7 +27,9 @@ struct event
     unsigned int remote_addr; // I handle remote sockets for now, local sockets are more complex
     unsigned short remote_port;
     unsigned short family; // AF_INET (=2) or AF_INET6 (=10)
-
+    
+    int dfd; // for event_open, the file descriptor returned by open() syscall
+    
     // for event_exit & event_clone: nothing needed, pid,uid,comm and timestamp are enough
     unsigned char group_dead; // for event_exit, indicates if the process group-threads is dead (1) or not (0)
 };

@@ -21,6 +21,23 @@ struct
     __uint(max_entries, 256 * 1024); // 256 KB
 } ring_buffer SEC(".maps");
 
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} drop_count SEC(".maps");
+
+
+static __always_inline void record_drop(void)
+{
+    __u32 key = 0;
+    __u64 *count = bpf_map_lookup_elem(&drop_count, &key);
+    if (count)
+        (*count)++;
+}
+
 static __always_inline void get_current_proc(struct event *e)  // fill the event struct with current process information
 {                                                              // timestamp, pid, uid, ppid and comm are the same for all events.
     struct task_struct *task;
@@ -46,6 +63,7 @@ int handle_execve(struct trace_event_raw_sys_enter* ctx) // hanlde the EXECVE ev
     e = bpf_ringbuf_reserve(&ring_buffer, sizeof(*e), 0); //safecheck it is not NULL
     if (!e)
     {
+        record_drop();
         return 0;
     }
     get_current_proc(e);
@@ -67,6 +85,7 @@ int handle_clone(struct trace_event_raw_sched_process_fork *ctx) // hanlde the C
     e = bpf_ringbuf_reserve(&ring_buffer, sizeof(*e), 0); //safecheck it is not NULL
     if (!e)
     {
+        record_drop();
         return 0;
     }
 
@@ -90,6 +109,7 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx) // hanlde the OPENAT
     e = bpf_ringbuf_reserve(&ring_buffer, sizeof(*e), 0); //safecheck it is not NULL
     if (!e)
     {
+        record_drop();
         return 0;
     }
 
@@ -98,6 +118,9 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx) // hanlde the OPENAT
 
     filename_ptr = (const char *)ctx->args[1];
     bpf_probe_read_user_str(&e->filename, sizeof(e->filename), filename_ptr);
+    
+
+    e->dfd = (int)ctx->args[0]; // Store the directory file descriptor (dfd) from the syscall arguments
 
     bpf_ringbuf_submit(e, 0);
     return 0;
@@ -113,6 +136,7 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) // hanlde the CONNECT
     e = bpf_ringbuf_reserve(&ring_buffer, sizeof(*e), 0); //safecheck it is not NULL
     if (!e)
     {
+        record_drop();
         return 0;
     }
 
@@ -151,6 +175,7 @@ int handle_exit(struct trace_event_raw_sched_process_exit *ctx) // hanlde the EX
     e = bpf_ringbuf_reserve(&ring_buffer, sizeof(*e), 0); //safecheck it is not NULL
     if (!e)
     {
+        record_drop();
         return 0;
     }
 
