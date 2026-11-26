@@ -162,6 +162,25 @@ struct
     __type(value, __u64);
 } dedup SEC(".maps");
 
+// Processes whose EXIT was already reported. When several threads of a process die at the same
+// moment (exit_group, a crash), two of them can both see "0 threads left" (signal->live == 0) and
+// both report the exit; measured: 10 double EXITs in 300 runs of a 64-thread program. Inserting
+// with BPF_NOEXIST is atomic, so exactly one thread wins and reports.
+struct proc_key
+{
+    __u32 tgid;
+    __u32 pad;
+    __u64 start_boot_ns;
+};
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct proc_key);
+    __type(value, __u8);
+} exited SEC(".maps");
+
 // Scratch buffer used to build a path from right to left ("name" <- "dir/name" <- "/dir/name").
 // Per-CPU so programs running at the same time on different CPUs never share it.
 // Twice PATH_LEN so the verifier can prove masked writes stay inside the buffer.
@@ -864,10 +883,19 @@ int on_exit(void *ctx)
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     struct event *e;
 
+    struct proc_key key = {};
+    __u8 one = 1;
+
     if (BPF_CORE_READ(task, signal, live.counter) != 0)
         return 0;
     if (skip_current(task))
         return 0;
+
+    key.tgid = bpf_get_current_pid_tgid() >> 32;
+    key.pad = 0;
+    key.start_boot_ns = BPF_CORE_READ(task, group_leader, start_boottime);
+    if (bpf_map_update_elem(&exited, &key, &one, BPF_NOEXIST) != 0)
+        return 0; // another thread of this process already reported the exit
 
     e = new_event(task, EVENT_EXIT, EVENT_SIZE_HEADER);
     if (!e)

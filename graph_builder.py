@@ -24,12 +24,22 @@ So "curl downloads x.sh, sh runs it" is the directed path
 """
 import gzip
 import json
+import re
 import sys
 from collections import Counter
 
 import networkx as nx
 
 MIN_SCHEMA = 3
+
+# /proc/1234/stat, /proc/1234/task/1235/status -> /proc/[pid]/stat, /proc/[pid]/task/[tid]/status
+# Tools like ps/top read these files for EVERY process, every time they run; as separate nodes
+# they flooded the trial graph (~18,000 throwaway file nodes in 22 minutes).
+_PROC_PID = re.compile(r"^/proc/\d+(/task/\d+)?(?=/|$)")
+
+
+def normalize_proc(path):
+    return _PROC_PID.sub(lambda m: "/proc/[pid]" + ("/task/[tid]" if m.group(1) else ""), path)
 
 
 class GraphBuilder:
@@ -58,6 +68,13 @@ class GraphBuilder:
         return key
 
     def file(self, e):
+        if e["filename"].startswith("/proc/"):
+            # procfs inodes are made up on the fly per process: identify by normalised path
+            path = normalize_proc(e["filename"])
+            key = ("file", "proc", path)
+            if key not in self.graph:
+                self.graph.add_node(key, node_type="file", kind="proc", path=path)
+            return key
         key = ("file", e["dev"], e["ino"], e["gen"])
         if key not in self.graph:
             self.graph.add_node(key, node_type="file", kind=e.get("kind", "file"), path=e["filename"])
@@ -113,6 +130,12 @@ class GraphBuilder:
         if t == "CLONE":
             parent = self.process(e["ppid"], e["parent_start_ticks"])
             node["born_in_capture"] = True
+            # fork() copies the parent: until it calls exec, the child runs the same program
+            # (a shell's subshell, a browser's helper). Without this, ~25% of processes in the
+            # trial had no program path, only a 15-character comm.
+            if not node["exe"]:
+                node["exe"] = self.graph.nodes[parent]["exe"]
+                node["cmdline"] = self.graph.nodes[parent]["cmdline"]
             self.edge(parent, subject, "clone", e)
 
         elif t == "EXEC":
@@ -130,6 +153,11 @@ class GraphBuilder:
             self.edge(subject, self.file(e), "write", e)
 
         elif t == "CONNECT":
+            if e["rport"] == 0:
+                # UDP "connect" to port 0: glibc probing which source address it would use
+                # during a name lookup. No traffic, so no edge (it stays in the raw capture).
+                self.stats["udp_probe_skipped"] += 1
+                return
             self.edge(subject, self.socket(e), "connect", e)
 
         elif t == "SEND":
@@ -184,7 +212,10 @@ class GraphBuilder:
             print(f"  {t}: {c}")
         print(f"total edges: {self.graph.number_of_edges()}")
         for t, c in sorted(self.stats.items()):
-            print(f"  {t}: {c}")
+            if t != "udp_probe_skipped":
+                print(f"  {t}: {c}")
+        print(f"UDP port-0 connect probes skipped (name lookups, no traffic): "
+              f"{self.stats['udp_probe_skipped']}")
 
         procs = [(n, a) for n, a in self.graph.nodes(data=True) if a["node_type"] == "process"]
         no_label = sum(1 for _, a in procs if not a.get("exe"))

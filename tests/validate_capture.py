@@ -184,7 +184,12 @@ def validate_file(path, rep, stats):
                 except ValueError:
                     rep.error("remote address does not parse", f"{where} {e['raddr']}")
                 if e["rport"] == 0:
-                    rep.error("remote port 0", where)
+                    if t == "CONNECT" and e["proto"] == "udp":
+                        # glibc's getaddrinfo() connect()s a UDP socket to each candidate address
+                        # (port 0) to learn the source address it would use. No packet is sent.
+                        stats["_udp_probes"] += 1
+                    else:
+                        rep.error("remote port 0", where)
                 if t == "ACCEPT" and e["lport"] == 0:
                     rep.error("ACCEPT without local port", where)
                 okey = None  # sockets are de-duplicated by socket inode, not visible here
@@ -212,9 +217,11 @@ def main():
         validate_file(path, rep, stats)
 
     secs = stats.pop("_seconds", 0) or 1
+    probes = stats.pop("_udp_probes", 0)
     print(f"capture: {secs / 3600:.2f} h, {stats.pop('_processes')} processes, "
           f"{stats.pop('_renamed_inodes')} files seen under more than one name (renames), "
           f"max out-of-order {stats.pop('_max_out_of_order_ms')} ms")
+    print(f"UDP connect probes to port 0 (name lookups, no traffic; fine): {probes}")
     print("events per hour: " + ", ".join(f"{t} {c * 3600 / secs:,.0f}" for t, c in stats.most_common()))
     for title, counter in (("ERRORS", rep.errors), ("WARNINGS", rep.warnings)):
         print(f"\n{title}: {sum(counter.values())}")
