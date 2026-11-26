@@ -5,7 +5,7 @@ LIBBPF_LIBS := $(shell pkg-config --libs libbpf)
 # The BPF program needs to know the CPU architecture: syscall numbers and register names differ.
 ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/')
 
-.PHONY: all clean vmlinux install selftest
+.PHONY: all clean vmlinux install selftest crosscheck
 
 all: probe.bpf.o loader
 
@@ -34,6 +34,10 @@ install: all
 # End-to-end check on this machine (needs root, python3 with networkx, curl)
 selftest: all
 	tests/selftest.sh
+
+# Compare the collector with strace on a varied workload (needs root and strace)
+crosscheck: all
+	tests/crosscheck_strace.sh
 
 clean:
 	rm -f probe.bpf.o loader

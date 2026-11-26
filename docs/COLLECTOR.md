@@ -34,6 +34,19 @@ python3 graph_builder.py /var/lib/phips/*.jsonl.gz
 the same (process, object) are reported once per window. `-d 0` reports every syscall; that is
 ~10x the volume and ~25x the overhead, so use it only for short experiments.
 
+## Verifying a machine before (and while) collecting
+
+Three checks, from quick to thorough. Run all three on every new machine or kernel.
+
+| Check | Command | What it proves |
+|---|---|---|
+| Self-test | `sudo tests/selftest.sh` | an attack chain, a rename, pipes, UDP and a failed exec come out right in the graph |
+| Cross-check | `sudo tests/crosscheck_strace.sh` | the collector sees exactly what strace (an independent tracer) sees on a varied workload: every (process, operation, object) |
+| Consistency | `python3 tests/validate_capture.py FILES...` | rules every capture must satisfy, over any amount of real data: no events after a process exits, no relative paths, no duplicates inside the de-dup window, valid addresses, no clock jumps |
+
+The first two use controlled workloads; the third is how you check hours of real use. Run it
+on the capture of every collection day; it must say `RESULT: OK`.
+
 ## What is recorded
 
 | Event | Kernel source | Meaning |

@@ -153,15 +153,19 @@ class GraphBuilder:
     def load_jsonl(self, path):
         opener = gzip.open if path.endswith(".gz") else open
         with opener(path, "rt") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    self.process_event(json.loads(line))
-                except (json.JSONDecodeError, KeyError) as err:
-                    # a capture cut by a crash/power loss can end with half a line
-                    print(f"skipping bad line {line_num} in {path}: {err}", file=sys.stderr)
+            try:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        self.process_event(json.loads(line))
+                    except (json.JSONDecodeError, KeyError) as err:
+                        # a capture cut by a crash/power loss can end with half a line
+                        print(f"skipping bad line {line_num} in {path}: {err}", file=sys.stderr)
+            except EOFError:
+                # gzip file cut short (collector killed, or still being written): keep what we read
+                print(f"{path}: ends abruptly, using the events before the cut", file=sys.stderr)
 
     # ------------------------------------------------------------------ report
     @staticmethod
