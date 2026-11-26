@@ -1,0 +1,24 @@
+# Install with:  sudo make install && sudo systemctl enable --now phips-collector
+# Logs:          journalctl -u phips-collector -f
+# Captures:      /var/lib/phips/<host>-<UTC date>-<time>.jsonl.gz  (a new file every UTC day)
+[Unit]
+Description=PHIPS eBPF provenance collector
+Documentation=file:///opt/phips/COLLECTOR.md
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/opt/phips/loader -o /var/lib/phips -z -d 60
+# stop with SIGTERM: the loader flushes and closes the gzip file cleanly
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=always
+RestartSec=5
+# a little priority so the ring buffer is drained even when the machine is busy
+Nice=-5
+# the collector must see everything, so it runs as root; keep its files private
+UMask=0027
+StateDirectory=phips
+
+[Install]
+WantedBy=multi-user.target

@@ -1,159 +1,202 @@
+"""
+Build a provenance graph from PHIPS collector captures (schema v3).
+
+    python3 graph_builder.py capture.jsonl [more.jsonl.gz ...]
+
+Nodes (and what makes two events refer to the SAME node):
+    process   (boot_id, pid, start_ticks)  - start time makes it unique even when a pid is reused
+    file      (dev, ino, gen)              - the inode: stays one node across rename / mv
+    socket    (remote ip, service port, protocol)
+
+Edges follow the flow of INFORMATION, like Orthrus / DARPA CDM:
+    clone    parent  -> child
+    exec     file    -> process   (the program's code flows into the process)
+    open     file    -> process   (Orthrus also points EVENT_OPEN at the process)
+    read     file    -> process
+    write    process -> file
+    connect  process -> socket
+    send     process -> socket
+    recv     socket  -> process
+    accept   socket  -> process
+
+So "curl downloads x.sh, sh runs it" is the directed path
+    socket(203.0.113.7:80) -recv-> curl -write-> x.sh -read-> sh
+"""
+import gzip
 import json
 import sys
+from collections import Counter
+
 import networkx as nx
- 
+
+MIN_SCHEMA = 3
+
+
 class GraphBuilder:
     def __init__(self):
         self.graph = nx.MultiDiGraph()
-        self.process_nodes = {}         # (pid,first_seen_ts) is the key
-        self.file_nodes = {}             # (path) is the key
-        self.socket_nodes = {}           # (remote_addr, remote_port) is the key
- 
-        self.active_pid_to_key = {}       # search for the active process by pid
-                                         # and then use the key to get the node in process_nodes
- 
-    def get_or_create_file(self, path):
-        if path not in self.file_nodes:
-            self.file_nodes[path] = {"node_type": "file", "path": path}
-            self.graph.add_node(("file", path), **self.file_nodes[path])
-        return ("file", path)
- 
- 
-    def get_or_create_socket(self, remote_addr, remote_port):
-        key = (remote_addr, remote_port)
-        if key not in self.socket_nodes:
-            self.socket_nodes[key] = {
-            "node_type": "socket",
-            "remote_addr": remote_addr,
-            "remote_port": remote_port,
-            }
+        self.boot_id = None   # from the META line of the file being loaded
+        self.meta = []        # every META header seen
+        self.stats = Counter()
 
-            self.graph.add_node(("socket", key), **self.socket_nodes[key])
-        return ("socket", key)
- 
-    
-    def resolve_process(self, pid, event, comm=None):  # here I just check if process was never CLONED
-        if pid in self.active_pid_to_key:
-            return self.active_pid_to_key[pid]
- 
-        key = (pid, event["ts_ns"])
-        self.process_nodes[key] = {
-            "node_type": "process",
-            "pid": pid,
-            "comm": comm if comm is not None else "",
-            "reconstructed": True,   # this process's real birth was never seen
-            }
-        self.graph.add_node(("process", key), **self.process_nodes[key])
-        self.active_pid_to_key[pid] = key
-        return key
- 
- 
-    def process_event(self, event):
-        etype = event["type"]
- 
-        if etype == "CLONE":
-            child_pid = event["pid"]
-            parent_pid = event["ppid"]
-            ts = event["ts_ns"]
- 
-            child_key = (child_pid, ts)
-            self.process_nodes[child_key] = {
-                "node_type": "process",
-                "pid": child_pid,
-                "comm": event.get("comm", ""),   # inherited from parent at fork
-                "reconstructed": False,
-            }
-            self.graph.add_node(("process", child_key), **self.process_nodes[child_key])
-            self.active_pid_to_key[child_pid] = child_key
- 
-            parent_key = self.resolve_process(parent_pid, event)
-            self.graph.add_edge(
-                ("process", parent_key), ("process", child_key),
-                edge_type="clone", ts_ns=ts,
+    # ------------------------------------------------------------------ nodes
+    def process(self, pid, start_ticks, comm=None):
+        """Return the node key of a process, creating the node the first time it is seen."""
+        key = ("process", self.boot_id, pid, start_ticks)
+        if key not in self.graph:
+            self.graph.add_node(
+                key,
+                node_type="process",
+                pid=pid,
+                comm=comm or "",
+                exe="",          # program path, filled by EXEC or by the PROC snapshot
+                cmdline="",      # arguments, filled by EXEC or by the PROC snapshot
+                born_in_capture=False,  # True if we saw its CLONE
             )
- 
-        elif etype == "EXEC":
-            subject_key = self.resolve_process(event["pid"], event, comm=event.get("comm", ""))
-            object_key = self.get_or_create_file(event["filename"])
- 
-            self.graph.add_edge(("process", subject_key), object_key,edge_type="exec", ts_ns=event["ts_ns"])
-            # just update with new comm and filename, since the process node already exists from CLONE
-            self.process_nodes[subject_key]["comm"] = event.get("comm", "")
-            self.process_nodes[subject_key]["exec_filename"] = event["filename"]
- 
-        elif etype == "OPEN":
-            subject_key = self.resolve_process(event["pid"], event, comm=event.get("comm", ""))
-            object_key = self.get_or_create_file(event["filename"])
- 
-            self.graph.add_edge(("process", subject_key), object_key,edge_type="open", ts_ns=event["ts_ns"])
- 
-        elif etype == "CONNECT":
-            subject_key = self.resolve_process(event["pid"], event, comm=event.get("comm", ""))
-            object_key = self.get_or_create_socket(event["dst_ip"], event["dst_port"])
- 
-            self.graph.add_edge(("process", subject_key), object_key,edge_type="connect", ts_ns=event["ts_ns"])
- 
-        elif etype == "EXIT":
-            subject_key = self.resolve_process(event["pid"], event, comm=event.get("comm", ""))
-            self.process_nodes[subject_key]["last_exit_ts"] = event["ts_ns"]
- 
-            # Only retire the active-pid pointer when we know the WHOLE process ended, not just one thread 
-            if event.get("group_dead"):
-                self.active_pid_to_key.pop(event["pid"], None)
- 
+        elif comm:
+            self.graph.nodes[key]["comm"] = comm
+        return key
+
+    def file(self, e):
+        key = ("file", e["dev"], e["ino"], e["gen"])
+        if key not in self.graph:
+            self.graph.add_node(key, node_type="file", kind=e.get("kind", "file"), path=e["filename"])
         else:
-            raise ValueError(f"unknown event type: {etype!r}")
- 
-    def summarize(self):
-        node_type_counts = {}
-        for _, attrs in self.graph.nodes(data=True):
-            t = attrs.get("node_type", "unknown")
-            node_type_counts[t] = node_type_counts.get(t, 0) + 1
- 
-        edge_type_counts = {}
-        for _, _, attrs in self.graph.edges(data=True):
-            t = attrs.get("edge_type", "unknown")
-            edge_type_counts[t] = edge_type_counts.get(t, 0) + 1
- 
-        reconstructed = sum(
-            1 for a in self.process_nodes.values() if a.get("reconstructed")
-        )
- 
-        print(f"total nodes: {self.graph.number_of_nodes()}")
-        for t, c in sorted(node_type_counts.items()):
-            print(f"  {t}: {c}")
-        print(f"total edges: {self.graph.number_of_edges()}")
-        for t, c in sorted(edge_type_counts.items()):
-            print(f"  {t}: {c}")
-        print(f"process nodes never seen at birth (reconstructed): {reconstructed}")
- 
-        print("\nmost active processes (by outgoing edge count):")
-        out_degrees = [
-            (n, self.graph.out_degree(n))
-            for n in self.graph.nodes
-            if n[0] == "process"
-        ]
-        out_degrees.sort(key=lambda x: x[1], reverse=True)
-        for (node_type, key), degree in out_degrees[:10]:
-            comm = self.process_nodes.get(key, {}).get("comm", "?")
-            print(f"  pid={key[0]:<8} comm={comm:<20} outgoing_edges={degree}")
- 
+            # same inode, possibly a new name after a rename: keep the latest name as the label
+            self.graph.nodes[key]["path"] = e["filename"]
+        return key
+
+    def socket(self, e):
+        # The "service" port identifies the conversation: 443 for a browser talking to a web
+        # server, 22 for clients of our sshd. The other side's port is random (ephemeral), and
+        # keying on it would create one node per connection.
+        lport, rport = e.get("lport", 0), e.get("rport", 0)
+        service_port = lport if (lport and lport < rport) else rport
+        key = ("socket", e["raddr"], service_port, e.get("proto", ""))
+        if key not in self.graph:
+            self.graph.add_node(key, node_type="socket", remote_addr=e["raddr"],
+                                port=service_port, proto=e.get("proto", ""))
+        return key
+
+    def edge(self, src, dst, edge_type, e):
+        self.graph.add_edge(src, dst, edge_type=edge_type, ts_ns=e["ts_ns"])
+        self.stats[edge_type] += 1
+
+    # ------------------------------------------------------------------ events
+    def process_event(self, e):
+        t = e["type"]
+
+        if t == "META":
+            if e.get("schema_version", 0) < MIN_SCHEMA:
+                raise SystemExit(f"capture schema v{e.get('schema_version')} is too old: "
+                                 f"re-record it with collector v{MIN_SCHEMA}")
+            self.boot_id = e["boot_id"]
+            self.meta.append(e)
+            return
+
+        if self.boot_id is None:
+            raise SystemExit("no META header before the first event: not a collector v3 capture "
+                             "(the old testsession*.jsonl / overnight.jsonl files are v1)")
+
+        if t == "PROC":
+            # snapshot of a process that was already running when the file started
+            p = self.process(e["pid"], e["start_ticks"], e["comm"])
+            n = self.graph.nodes[p]
+            n.update(exe=e["filename"], cmdline=e["args"], uid=e["uid"], euid=e["euid"])
+            return
+
+        subject = self.process(e["pid"], e["start_ticks"], e.get("comm"))
+        node = self.graph.nodes[subject]
+        node.setdefault("uid", e["uid"])
+        node["euid"] = e["euid"]
+
+        if t == "CLONE":
+            parent = self.process(e["ppid"], e["parent_start_ticks"])
+            node["born_in_capture"] = True
+            self.edge(parent, subject, "clone", e)
+
+        elif t == "EXEC":
+            f = self.file(e)
+            self.edge(f, subject, "exec", e)
+            node.update(exe=e["filename"], cmdline=e["args"], comm=e["comm"])
+
+        elif t == "OPEN":
+            self.edge(self.file(e), subject, "open", e)
+
+        elif t == "READ":
+            self.edge(self.file(e), subject, "read", e)
+
+        elif t == "WRITE":
+            self.edge(subject, self.file(e), "write", e)
+
+        elif t == "CONNECT":
+            self.edge(subject, self.socket(e), "connect", e)
+
+        elif t == "SEND":
+            self.edge(subject, self.socket(e), "send", e)
+
+        elif t == "RECV":
+            self.edge(self.socket(e), subject, "recv", e)
+
+        elif t == "ACCEPT":
+            self.edge(self.socket(e), subject, "accept", e)
+
+        elif t == "EXIT":
+            node["exit_ts_ns"] = e["ts_ns"]
+            node["exit_code"] = e.get("exit_code")
+            node["exit_signal"] = e.get("signal")
+
+        else:
+            self.stats["unknown_event"] += 1
+
+    # ------------------------------------------------------------------ loading
     def load_jsonl(self, path):
-        with open(path) as f:
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt") as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     self.process_event(json.loads(line))
-                except (json.JSONDecodeError, KeyError) as e:
-                    print(f"skipping bad line {line_num} in {path}: {e}", file=sys.stderr)
- 
- 
+                except (json.JSONDecodeError, KeyError) as err:
+                    # a capture cut by a crash/power loss can end with half a line
+                    print(f"skipping bad line {line_num} in {path}: {err}", file=sys.stderr)
+
+    # ------------------------------------------------------------------ report
+    @staticmethod
+    def label(attrs):
+        t = attrs["node_type"]
+        if t == "process":
+            return attrs.get("exe") or attrs.get("comm", "?")
+        if t == "file":
+            return attrs.get("path", "?")
+        return f"{attrs.get('remote_addr')}:{attrs.get('port')}/{attrs.get('proto')}"
+
+    def summarize(self):
+        types = Counter(a["node_type"] for _, a in self.graph.nodes(data=True))
+        print(f"total nodes: {self.graph.number_of_nodes()}")
+        for t, c in sorted(types.items()):
+            print(f"  {t}: {c}")
+        print(f"total edges: {self.graph.number_of_edges()}")
+        for t, c in sorted(self.stats.items()):
+            print(f"  {t}: {c}")
+
+        procs = [(n, a) for n, a in self.graph.nodes(data=True) if a["node_type"] == "process"]
+        no_label = sum(1 for _, a in procs if not a.get("exe"))
+        print(f"processes without program path (comm only): {no_label}")
+        print(f"processes with no edges: {sum(1 for n, _ in procs if self.graph.degree(n) == 0)}")
+
+        print("\nmost active processes (edges in + out):")
+        ranked = sorted(procs, key=lambda na: self.graph.degree(na[0]), reverse=True)
+        for n, a in ranked[:10]:
+            print(f"  pid={a['pid']:<8} edges={self.graph.degree(n):<7} {self.label(a)}")
+
+
 if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        raise SystemExit(__doc__)
     gb = GraphBuilder()
-    for path in sys.argv[1:]:
-        gb.load_jsonl(path)
- 
+    for p in sys.argv[1:]:
+        gb.load_jsonl(p)
     gb.summarize()
- 

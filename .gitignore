@@ -1,0 +1,11 @@
+# build outputs (rebuild with `make`)
+loader
+probe.bpf.o
+# python bytecode
+__pycache__/
+*.pyc
+# editor / tooling
+compile_commands.json
+# captures (they are big and private: keep them out of git)
+captures/
+*.jsonl.gz
